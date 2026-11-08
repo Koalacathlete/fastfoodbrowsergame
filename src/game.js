@@ -1,5 +1,7 @@
 export const SHIFT_SECONDS = 90;
 export const DAILY_RENT = 1200;
+export const LANE_COUNT = 3;
+export const LANE_CAPACITY = 3;
 export const SAVE_KEY = "daily-bun-save-v1";
 export const money = (cents) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(
@@ -87,7 +89,7 @@ export const UPGRADES = [
     short: "Sidewalk sign",
     icon: "sign",
     description: "Give the neighborhood something to talk about.",
-    effect: "+18% customer demand per level",
+    effect: "+18% foot traffic per level",
     prices: [4500, 8000, 12500],
   },
   {
@@ -161,7 +163,16 @@ export function initialState() {
       },
     ],
     upgrades: { seating: 0, sign: 0, kitchen: 0, plants: 0 },
-    lifetime: { served: 0, revenue: 0, profit: 0, bestStreak: 0 },
+    lifetime: {
+      served: 0,
+      revenue: 0,
+      profit: 0,
+      bestStreak: 0,
+      visitors: 0,
+      rejected: 0,
+      lost: 0,
+      turnedAway: 0,
+    },
     lastReport: null,
     shift: null,
   };
@@ -187,23 +198,76 @@ export function itemCost(item, state) {
   return Math.round(baseItemCost(item) * (1 - state.upgrades.kitchen * 0.05));
 }
 
-export function demand(state) {
-  // Guests judge the menu's value, independent of the kitchen's waste savings.
-  // Burgers carry more weight; sides and drinks have higher normal markups.
-  const normalMarkup = { burger: 2.6, side: 4, drink: 5.4 };
+const clamp = (low, high, value) => Math.max(low, Math.min(high, value));
+
+export function referencePrice(item) {
+  return Math.round(
+    baseItemCost(item) * { burger: 2.6, side: 4, drink: 5.4 }[item.kind],
+  );
+}
+
+export function priceRatio(item) {
+  return item.price / referencePrice(item);
+}
+
+function menuDemand(state) {
   let weight = 0;
-  const weightedValue = state.menu.reduce((sum, item) => {
-    const importance = item.kind === "burger" ? 2 : 1;
-    weight += importance;
-    return (
-      sum +
-      (importance * item.price) / (baseItemCost(item) * normalMarkup[item.kind])
-    );
-  }, 0);
-  const ratio = weightedValue / weight;
-  return Math.max(
-    0.35,
-    Math.min(1.6, 1.05 - (ratio - 1) * 0.65 + state.upgrades.sign * 0.18),
+  const value =
+    state.menu.reduce((sum, item) => {
+      const importance = item.kind === "burger" ? 2 : 1;
+      weight += importance;
+      return sum + importance * priceRatio(item);
+    }, 0) / weight;
+  return clamp(0.35, 1.6, 1.05 - (value - 1) * 0.65);
+}
+
+export function demand(state) {
+  return menuDemand(state) * (1 + state.upgrades.sign * 0.18);
+}
+
+export function footTraffic(state) {
+  // A busy street still has visitors when prices are high; they can say no.
+  return (0.88 + menuDemand(state) * 0.12) * (1 + state.upgrades.sign * 0.18);
+}
+
+export function laneQueue(state, lane) {
+  return state.shift?.queue.filter((order) => order.lane === lane) ?? [];
+}
+
+export function activeOrder(state) {
+  return laneQueue(state, state.shift?.activeLane)[0];
+}
+
+function ensureActiveLane(state) {
+  if (!activeOrder(state) && state.shift.queue.length)
+    state.shift.activeLane = state.shift.queue[0].lane;
+}
+
+export function selectLane(state, lane) {
+  if (!state.shift || state.shift.paused)
+    return "Resume your shift to serve a line.";
+  if (!Number.isInteger(lane) || lane < 0 || lane >= LANE_COUNT)
+    return "Choose a checkout line.";
+  if (lane === state.shift.activeLane) return null;
+  if (activeOrder(state)?.stage === "change")
+    return "Finish giving this customer their change before switching lines.";
+  if (!laneQueue(state, lane).length)
+    return "This line is empty. Pick a customer who is waiting.";
+  state.shift.activeLane = lane;
+  return null;
+}
+
+const PROFILES = [
+  { name: "Bargain hunter", base: 0.85, spread: 0.35, extra: 0.05 },
+  { name: "Lunch regular", base: 1.1, spread: 0.4, extra: 0 },
+  { name: "Treat-yourself", base: 1.45, spread: 0.55, extra: 0.1 },
+];
+
+function valuePick(items, random) {
+  const weights = items.map((item) => Math.pow(1 / priceRatio(item), 2));
+  let target = random() * weights.reduce((sum, value) => sum + value, 0);
+  return (
+    items.find((item, index) => (target -= weights[index]) <= 0) ?? items.at(-1)
   );
 }
 
@@ -259,21 +323,50 @@ export function buyUpgrade(state, id) {
   return null;
 }
 
-export function createOrder(state, random = Math.random) {
-  const burgers = state.menu.filter((i) => i.kind === "burger");
-  const extras = state.menu.filter((i) => i.kind !== "burger");
-  const burger = burgers[Math.floor(random() * burgers.length)];
-  const selections = [{ item: burger, qty: random() < 0.3 ? 2 : 1 }];
-  if (random() < 0.85)
-    selections.push({
-      item: extras[Math.floor(random() * extras.length)],
-      qty: random() < 0.25 ? 2 : 1,
-    });
-  if (state.day > 2 && random() < 0.4) {
-    const extra = extras.find(
-      (i) => !selections.some((s) => s.item.id === i.id),
+export function createOrder(state, random = Math.random, lane = 0) {
+  const segment = random();
+  const profile = PROFILES[segment < 0.35 ? 0 : segment < 0.8 ? 1 : 2];
+  const burgers = state.menu.filter((item) => item.kind === "burger");
+  const extras = state.menu.filter((item) => item.kind !== "burger");
+  const burger = valuePick(burgers, random);
+  const limitFactor = profile.base + random() * profile.spread;
+  const limit = Math.round((referencePrice(burger) * limitFactor) / 25) * 25;
+  const declined = burger.price > limit;
+  const value = priceRatio(burger);
+  const selections = [];
+  if (!declined) {
+    const extraBurgerChance = clamp(
+      0.08,
+      0.9,
+      0.3 + (1 - value) * 1.0 + profile.extra,
     );
-    if (extra) selections.push({ item: extra, qty: 1 });
+    let qty = 1 + (random() < extraBurgerChance ? 1 : 0);
+    if (value < 0.8 && random() < 0.22) qty += 1;
+    selections.push({ item: burger, qty });
+    const affordableExtras = extras.filter(
+      (item) => item.price <= referencePrice(item) * limitFactor,
+    );
+    if (affordableExtras.length) {
+      const extra = valuePick(affordableExtras, random);
+      const extraValue = priceRatio(extra);
+      if (random() < clamp(0.08, 0.96, 0.72 + (1 - extraValue) * 0.75)) {
+        selections.push({
+          item: extra,
+          qty:
+            random() < clamp(0.08, 0.7, 0.2 + (1 - extraValue) * 0.7) ? 2 : 1,
+        });
+      }
+      const second = affordableExtras.find(
+        (item) =>
+          !selections.some((selection) => selection.item.id === item.id),
+      );
+      if (
+        state.day > 2 &&
+        second &&
+        random() < clamp(0.05, 0.85, 0.32 + (1 - priceRatio(second)) * 0.8)
+      )
+        selections.push({ item: second, qty: 1 });
+    }
   }
   const lines = selections.map(({ item, qty }) => ({
     id: item.id,
@@ -282,19 +375,32 @@ export function createOrder(state, random = Math.random) {
     cost: itemCost(item, state),
     qty,
   }));
-  const total = lines.reduce((sum, i) => sum + i.price * i.qty, 0);
-  const cost = lines.reduce((sum, i) => sum + i.cost * i.qty, 0);
-  const cash =
-    [1000, 2000, 3000, 4000, 5000, 6000].find((amount) => amount > total) ??
-    Math.ceil(total / 1000) * 1000 + 1000;
+  const total = lines.reduce((sum, item) => sum + item.price * item.qty, 0);
+  const cost = lines.reduce((sum, item) => sum + item.cost * item.qty, 0);
+  const cash = declined
+    ? 0
+    : ([1000, 2000, 3000, 4000, 5000, 6000].find((amount) => amount > total) ??
+      Math.ceil(total / 1000) * 1000 + 1000);
   const maxPatience =
     Math.max(20, 36 - Math.min(10, state.day - 1)) + state.upgrades.seating * 6;
-  const seq = ++state.shift.arrived;
-  const avatar = Math.floor(random() * CUSTOMERS.length);
+  let avatar = Math.floor(random() * CUSTOMERS.length);
+  const used = new Set(state.shift.queue.map((order) => order.avatar));
+  while (used.has(avatar)) avatar = (avatar + 1) % CUSTOMERS.length;
+  const quote = declined
+    ? `“${money(burger.price)} for a burger? A bit much for me. I’ll pass.”`
+    : value < 0.9 && lines[0].qty > 1
+      ? `“At these prices, make it ${lines[0].qty === 2 ? "two" : "three"}!”`
+      : value < 0.9
+        ? "“These prices look good. Count me in!”"
+        : "“Hey! Could I get…”";
   return {
-    id: seq,
+    id: ++state.shift.arrived,
+    lane,
     customer: CUSTOMERS[avatar],
     avatar,
+    profile: profile.name,
+    quote,
+    considered: { name: burger.name, price: burger.price, limit },
     lines,
     total,
     cost,
@@ -302,7 +408,8 @@ export function createOrder(state, random = Math.random) {
     patience: maxPatience,
     maxPatience,
     mistakes: 0,
-    stage: "total",
+    stage: declined ? "declined" : "total",
+    refusalRemaining: declined ? 3.5 : 0,
     acceptedTotal: null,
   };
 }
@@ -314,18 +421,23 @@ export function startShift(state, random = Math.random) {
     paused: false,
     elapsed: 0,
     queue: [],
-    nextArrival: 9 / demand(state),
+    activeLane: 0,
+    nextArrival: 4.5 / footTraffic(state),
     arrived: 0,
     served: 0,
     lost: 0,
+    rejected: 0,
+    turnedAway: 0,
     revenue: 0,
     costs: 0,
     tips: 0,
     mistakes: 0,
     streak: 0,
     bestStreak: 0,
+    notice: null,
   };
-  state.shift.queue.push(createOrder(state, random));
+  for (let lane = 0; lane < LANE_COUNT; lane++)
+    state.shift.queue.push(createOrder(state, random, lane));
   return null;
 }
 
@@ -336,26 +448,75 @@ export function tick(state, seconds, random = Math.random) {
   shift.elapsed += dt;
   shift.remaining = Math.max(0, shift.remaining - dt);
   const events = [];
-  for (const order of shift.queue) order.patience -= dt;
-  const left = shift.queue.filter((i) => i.patience <= 0);
+  if (shift.notice) {
+    shift.notice.remaining -= dt;
+    if (shift.notice.remaining <= 0) {
+      shift.notice = null;
+      events.push({ type: "notice" });
+    }
+  }
+  const heads = new Set(
+    Array.from(
+      { length: LANE_COUNT },
+      (_, lane) => laneQueue(state, lane)[0]?.id,
+    ),
+  );
+  for (const order of shift.queue) {
+    if (heads.has(order.id) && order.stage === "declined")
+      order.refusalRemaining -= dt;
+    else order.patience -= dt;
+  }
+  const refusals = shift.queue.filter(
+    (order) => order.stage === "declined" && order.refusalRemaining <= 0,
+  );
+  const left = shift.queue.filter(
+    (order) =>
+      order.patience <= 0 &&
+      !(heads.has(order.id) && order.stage === "declined"),
+  );
+  if (refusals.length) {
+    shift.rejected += refusals.length;
+    const last = refusals.at(-1);
+    shift.notice = { text: `${last.customer}: ${last.quote}`, remaining: 5 };
+    events.push({
+      type: "rejected",
+      count: refusals.length,
+      ids: refusals.map((order) => order.id),
+    });
+  }
   if (left.length) {
-    shift.queue = shift.queue.filter((i) => i.patience > 0);
     shift.lost += left.length;
     shift.streak = 0;
     events.push({
       type: "left",
       count: left.length,
-      ids: left.map((i) => i.id),
+      ids: left.map((order) => order.id),
     });
   }
+  const removed = new Set([...refusals, ...left].map((order) => order.id));
+  shift.queue = shift.queue.filter((order) => !removed.has(order.id));
   shift.nextArrival -= dt;
-  if (shift.nextArrival <= 0 && shift.remaining > 12) {
-    if (shift.queue.length < 3) {
-      shift.queue.push(createOrder(state, random));
+  if (shift.nextArrival <= 0 && shift.remaining > 10) {
+    const sizes = Array.from(
+      { length: LANE_COUNT },
+      (_, lane) => laneQueue(state, lane).length,
+    );
+    const shortest = Math.min(...sizes);
+    if (shortest < LANE_CAPACITY) {
+      const options = sizes
+        .map((size, lane) => (size === shortest ? lane : -1))
+        .filter((lane) => lane >= 0);
+      const lane = options[Math.floor(random() * options.length)];
+      shift.queue.push(createOrder(state, random, lane));
       events.push({ type: "arrived" });
+    } else {
+      shift.arrived += 1;
+      shift.turnedAway += 1;
+      events.push({ type: "full" });
     }
-    shift.nextArrival = (10 + random() * 4) / demand(state);
+    shift.nextArrival = (4.4 + random() * 1.6) / footTraffic(state);
   }
+  ensureActiveLane(state);
   if (shift.remaining <= 0) {
     finishShift(state);
     events.push({ type: "closed" });
@@ -367,7 +528,12 @@ export function submitOrderTotal(state, totalInput) {
   const shift = state.shift;
   if (!shift || shift.paused || !shift.queue.length)
     return { ok: false, message: "Wait for a customer, then ring them up." };
-  const order = shift.queue[0];
+  const order = activeOrder(state);
+  if (!order || order.stage === "declined")
+    return {
+      ok: false,
+      message: "This customer is passing on the prices. Serve another line.",
+    };
   if (order.stage !== "total")
     return {
       ok: false,
@@ -394,8 +560,8 @@ export function serveOrder(state, changeInput) {
   const shift = state.shift;
   if (!shift || shift.paused || !shift.queue.length)
     return { ok: false, message: "Wait for a customer, then ring them up." };
-  const order = shift.queue[0];
-  if (order.stage !== "change" || order.acceptedTotal !== order.total)
+  const order = activeOrder(state);
+  if (!order || order.stage !== "change" || order.acceptedTotal !== order.total)
     return {
       ok: false,
       message: "Ring up the order total before taking payment.",
@@ -422,7 +588,11 @@ export function serveOrder(state, changeInput) {
   shift.served += 1;
   shift.streak = order.mistakes ? 0 : shift.streak + 1;
   shift.bestStreak = Math.max(shift.bestStreak, shift.streak);
-  shift.queue.shift();
+  shift.queue.splice(
+    shift.queue.findIndex((item) => item.id === order.id),
+    1,
+  );
+  ensureActiveLane(state);
   return {
     ok: true,
     tip,
@@ -434,7 +604,13 @@ export function serveOrder(state, changeInput) {
 export function finishShift(state) {
   const shift = state.shift;
   if (!shift) return null;
-  shift.lost += shift.queue.length;
+  const refusingHeads = new Set(
+    Array.from({ length: LANE_COUNT }, (_, lane) => laneQueue(state, lane)[0])
+      .filter((order) => order?.stage === "declined")
+      .map((order) => order.id),
+  );
+  shift.rejected += refusingHeads.size;
+  shift.lost += shift.queue.length - refusingHeads.size;
   const profit = shift.revenue + shift.tips - shift.costs - DAILY_RENT;
   state.balance -= DAILY_RENT;
   const report = {
@@ -448,6 +624,9 @@ export function finishShift(state) {
     lost: shift.lost,
     mistakes: shift.mistakes,
     bestStreak: shift.bestStreak,
+    visitors: shift.arrived,
+    rejected: shift.rejected,
+    turnedAway: shift.turnedAway,
   };
   state.lastReport = report;
   state.lifetime.served += report.served;
@@ -457,6 +636,8 @@ export function finishShift(state) {
     state.lifetime.bestStreak,
     report.bestStreak,
   );
+  for (const key of ["visitors", "rejected", "lost", "turnedAway"])
+    state.lifetime[key] = (state.lifetime[key] ?? 0) + report[key];
   state.day += 1;
   state.shift = null;
   return report;
@@ -513,7 +694,7 @@ export function loadState(storage) {
         state.shift.remaining <= 0 ||
         state.shift.remaining > SHIFT_SECONDS ||
         !Array.isArray(state.shift.queue) ||
-        state.shift.queue.length > 3 ||
+        state.shift.queue.length > LANE_COUNT * LANE_CAPACITY ||
         state.shift.queue.some(
           (i) =>
             !Number.isFinite(i.total) ||
@@ -524,16 +705,43 @@ export function loadState(storage) {
         )
       )
         throw new Error("Invalid shift");
-      for (const order of state.shift.queue) {
+      state.shift.activeLane ??= 0;
+      state.shift.rejected ??= 0;
+      state.shift.turnedAway ??= 0;
+      state.shift.notice ??= null;
+      if (
+        !Number.isInteger(state.shift.activeLane) ||
+        state.shift.activeLane < 0 ||
+        state.shift.activeLane >= LANE_COUNT
+      )
+        throw new Error("Invalid lane");
+      for (const [index, order] of state.shift.queue.entries()) {
+        order.lane ??= index % LANE_COUNT;
+        if (
+          !Number.isInteger(order.lane) ||
+          order.lane < 0 ||
+          order.lane >= LANE_COUNT
+        )
+          throw new Error("Invalid lane");
         // Existing saves predate the two-step register. Keep their progress.
         order.stage ??= "total";
         order.acceptedTotal ??= null;
         if (
-          !["total", "change"].includes(order.stage) ||
-          (order.stage === "change" && order.acceptedTotal !== order.total)
+          !["total", "change", "declined"].includes(order.stage) ||
+          (order.stage === "change" && order.acceptedTotal !== order.total) ||
+          (order.stage === "declined" &&
+            (!order.considered || !Number.isFinite(order.refusalRemaining)))
         )
           throw new Error("Invalid cashier stage");
       }
+      if (
+        Array.from(
+          { length: LANE_COUNT },
+          (_, lane) => laneQueue(state, lane).length,
+        ).some((size) => size > LANE_CAPACITY)
+      )
+        throw new Error("Invalid lane capacity");
+      ensureActiveLane(state);
       state.shift.paused = true;
     }
     return state;

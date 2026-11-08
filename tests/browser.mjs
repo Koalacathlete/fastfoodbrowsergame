@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync } from "node:fs";
 import { chromium } from "playwright";
 import { createServer } from "vite";
-import { initialState, startShift, SAVE_KEY } from "../src/game.js";
+import {
+  initialState,
+  startShift,
+  referencePrice,
+  SAVE_KEY,
+} from "../src/game.js";
 
 const server = await createServer({
   server: { host: "127.0.0.1", port: 4174, strictPort: true },
@@ -29,6 +34,9 @@ try {
     if (msg.type() === "error") errors.push(msg.text());
   });
   await page.clock.install();
+  await page.addInitScript(() => {
+    Math.random = () => 0.5;
+  });
   await page.goto("http://127.0.0.1:4174");
   await page.evaluate(() => document.fonts.ready);
   await page.evaluate(() => window.scrollTo(0, 0));
@@ -92,8 +100,18 @@ try {
   await page.locator('nav [data-page="counter"]').click();
   assert.equal(await page.locator("#stat-balance").innerText(), "$85.00");
 
+  // All three fronts are visible; switching before payment preserves partial entry.
   // A physical till rings up the total first; cash is not revealed early.
   await page.locator('[data-action="start"]').click();
+  assert.equal(await page.locator(".lane-front").count(), 3);
+  assert.equal(await page.locator(".lineup-lane").count(), 3);
+  await page.locator('.lineup-lane[data-lane="1"]').click();
+  await page.locator("#register-amount").fill("1.25");
+  await page.locator('.lane-front[data-lane="2"]').click();
+  assert.equal(await page.locator("#register-amount").inputValue(), "");
+  await page.locator('.lineup-lane[data-lane="1"]').click();
+  assert.equal(await page.locator("#register-amount").inputValue(), "1.25");
+  await page.locator('[data-key="clear"]').click();
   assert.equal(await page.locator("#cash-received").count(), 0);
   assert.equal(
     await page
@@ -157,6 +175,19 @@ try {
   );
   const cash = Number(
     await page.locator("#cash-received").getAttribute("data-cents"),
+  );
+  const payingName = await page.locator(".customer-speech h2").innerText();
+  await page.locator('.lineup-lane[data-lane="0"]').click();
+  assert.match(await page.locator("#toast").innerText(), /Finish giving/);
+  assert.equal(
+    await page.locator(".customer-speech h2").innerText(),
+    payingName,
+  );
+  assert.equal(
+    await page
+      .locator('.lineup-lane[data-lane="1"]')
+      .getAttribute("aria-pressed"),
+    "true",
   );
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({
@@ -269,6 +300,9 @@ try {
     isMobile: true,
     hasTouch: true,
   });
+  await mobile.addInitScript(() => {
+    Math.random = () => 0.5;
+  });
   mobile.on("pageerror", (error) => errors.push(error.message));
   await mobile.goto("http://127.0.0.1:4174");
   await mobile.evaluate(() => document.fonts.ready);
@@ -327,6 +361,9 @@ try {
   // Later days with long recipe names must still expose every item on mobile.
   const busyState = initialState();
   busyState.day = 4;
+  busyState.menu.forEach(
+    (item) => (item.price = Math.round((referencePrice(item) * 0.7) / 25) * 25),
+  );
   busyState.menu[0].name = "The Extra Special Burger";
   startShift(busyState, () => 0.1);
   await mobile.addInitScript(
@@ -339,6 +376,10 @@ try {
   await mobile.reload();
   await mobile.locator('.scene-shift-bar [data-action="pause"]').click();
   assert.equal(await mobile.locator(".order-line").count(), 3);
+  assert.match(
+    await mobile.locator(".spoken-line").innerText(),
+    /At these prices/,
+  );
   const tillBox = await mobile.locator(".cash-register").boundingBox();
   for (const line of await mobile.locator(".order-line").all()) {
     const lineBox = await line.boundingBox();
@@ -357,9 +398,70 @@ try {
     fullPage: true,
   });
 
+  // Overpriced menus cause visible refusals, not failed math or ingredient charges.
+  const expensive = initialState();
+  expensive.menu.forEach((item) => (item.price = 3000));
+  startShift(expensive, () => 0.5);
+  const marketPage = await browser.newPage({
+    viewport: { width: 1440, height: 1000 },
+  });
+  marketPage.on("pageerror", (error) => errors.push(error.message));
+  await marketPage.clock.install();
+  await marketPage.addInitScript(
+    ({ key, value }) => {
+      Math.random = () => 0.5;
+      localStorage.setItem(key, value);
+    },
+    { key: SAVE_KEY, value: JSON.stringify(expensive) },
+  );
+  await marketPage.goto("http://127.0.0.1:4174");
+  await marketPage.locator('.scene-shift-bar [data-action="pause"]').click();
+  assert.equal(await marketPage.locator(".service-lane.declining").count(), 3);
+  assert.match(
+    await marketPage.locator(".refusal-quote").innerText(),
+    /I’ll pass/,
+  );
+  assert.equal(await marketPage.locator("#register-amount").count(), 0);
+  assert.equal(
+    await marketPage.locator("#stat-balance").innerText(),
+    "$120.00",
+  );
+  await marketPage.screenshot({
+    path: "test-results/price-refusals.png",
+    fullPage: true,
+  });
+  await marketPage.clock.runFor(4000);
+  assert.equal(await marketPage.locator("#stat-refused").innerText(), "3");
+  assert.match(
+    await marketPage.locator("#market-note").innerText(),
+    /I’ll pass/,
+  );
+  assert.equal(
+    await marketPage.locator("#stat-balance").innerText(),
+    "$120.00",
+  );
+  await marketPage.clock.runFor(95000);
+  assert.match(
+    await marketPage.locator(".report-market-summary").innerText(),
+    /0% bought/,
+  );
+  assert.ok(
+    Number(
+      await marketPage
+        .locator(".market-metrics>div")
+        .nth(1)
+        .locator("strong")
+        .innerText(),
+    ) > 3,
+  );
+  assert.equal(
+    await marketPage.locator("#stat-balance").innerText(),
+    "$108.00",
+  );
+
   assert.deepEqual(errors, [], "no browser runtime or console errors");
   console.log(
-    "PASS: recipe editing, pricing validation, new recipes, upgrades, two-stage cashier math, physical keypad, pause, save/resume, automatic closing, reports, early closing, reset, help, and mobile layouts.",
+    "PASS: recipe editing, pricing validation, new recipes, upgrades, two-stage cashier math, physical keypad, three visible FIFO lines, line switching, price refusals, pause, save/resume, automatic closing, reports, early closing, reset, help, and mobile layouts.",
   );
   console.log("Screenshots saved in test-results/.");
 } finally {

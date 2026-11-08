@@ -5,6 +5,9 @@ import {
   parseMoney,
   itemCost,
   demand,
+  activeOrder,
+  laneQueue,
+  referencePrice,
   updateItem,
   buyUpgrade,
   startShift,
@@ -19,7 +22,7 @@ import {
 
 const fixed = () => 0.5;
 const ringUp = (state) => {
-  const order = state.shift.queue[0];
+  const order = activeOrder(state);
   const first = submitOrderTotal(state, (order.total / 100).toFixed(2));
   if (!first.ok) return first;
   return serveOrder(state, ((order.cash - order.total) / 100).toFixed(2));
@@ -119,7 +122,11 @@ test("cashier accepts the total before revealing payment and only credits correc
   assert.equal(state.balance, 12000 + order.total - order.cost);
   assert.equal(state.shift.costs, order.cost);
   assert.equal(state.shift.mistakes, 2);
-  assert.equal(state.shift.queue.length, 0);
+  assert.equal(state.shift.queue.length, 2);
+  assert.equal(
+    state.shift.queue.some((item) => item.id === order.id),
+    false,
+  );
   assert.equal(state.shift.streak, 0);
 });
 
@@ -143,7 +150,7 @@ test("pause freezes the clock, patience, arrivals, and serving", () => {
   assert.equal(JSON.stringify(state), snapshot);
 });
 
-test("waiting customers can leave and the queue never exceeds three", () => {
+test("waiting customers can leave and each of three lines has at most three people", () => {
   const state = initialState();
   startShift(state, fixed);
   let losses = 0;
@@ -152,7 +159,9 @@ test("waiting customers can leave and the queue never exceeds three", () => {
     losses += events
       .filter((i) => i.type === "left")
       .reduce((sum, e) => sum + e.count, 0);
-    assert.ok(state.shift.queue.length <= 3);
+    assert.ok(state.shift.queue.length <= 9);
+    for (let lane = 0; lane < 3; lane++)
+      assert.ok(laneQueue(state, lane).length <= 3);
   }
   assert.ok(losses > 0);
   assert.equal(state.shift.lost, losses);
@@ -169,7 +178,7 @@ test("a complete shift reconciles the bank, costs, tips, rent, and lifetime tota
   assert.equal(state.day, 2);
   const report = state.lastReport;
   assert.ok(
-    report.served >= 5,
+    report.served >= 15,
     "multiple customer orders were actually served",
   );
   assert.equal(
@@ -218,10 +227,13 @@ test("upgrades charge once per level, enforce affordability, and affect gameplay
 test("orders snapshot prices and ingredient costs and can include a later-day third item", () => {
   const state = initialState();
   state.day = 4;
+  state.menu.forEach(
+    (item) => (item.price = Math.round((referencePrice(item) * 0.7) / 25) * 25),
+  );
   startShift(state, () => 0.1);
-  const order = state.shift.queue[0];
+  const order = activeOrder(state);
   assert.equal(order.lines.length, 3);
-  assert.equal(order.lines[0].qty, 2);
+  assert.ok(order.lines[0].qty >= 2);
   assert.equal(
     order.total,
     order.lines.reduce((s, l) => s + l.price * l.qty, 0),
@@ -275,7 +287,7 @@ test("payment stage survives reload and legacy active orders migrate without los
       this.value = value;
     },
   };
-  const order = state.shift.queue[0];
+  const order = activeOrder(state);
   submitOrderTotal(state, (order.total / 100).toFixed(2));
   saveState(state, storage);
   let loaded = loadState(storage);

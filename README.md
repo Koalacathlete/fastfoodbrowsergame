@@ -54,16 +54,16 @@ Saves remain local to each browser and origin. A save made during local developm
 ## Play
 
 1. **Make your menu.** Start with three signature burgers, fries, and lemonade. Edit names and prices, choose a patty and individual toppings, or create a fourth burger. The menu builder shows ingredient costs, profit per sale, and margins. A burger needs one bun and one patty; toppings are optional. Prices must exceed food costs.
-2. **Open for the day.** A shift lasts 90 seconds. Customers choose one or two burgers and may add a side or drink. From day three, orders can include a third line item. Higher prices reduce demand, while a sidewalk sign increases it.
+2. **Open for the day.** A shift lasts 90 seconds and opens with one customer in each of three lines. New visitors arrive roughly every four to six seconds and join a shorter line. Bargain hunters, lunch regulars, and customers treating themselves have different price tolerances. Some will visibly decline an expensive burger and leave without a sale. Value prices encourage larger burger quantities and more extras; overpriced sides can be skipped. From day three, orders can include both a side and a drink. The sidewalk sign brings in more visitors, including people who may decide not to buy.
 3. **Work the till.** You play from behind the counter, with a customer in front of you and a cash register in the foreground. Read their order slip and add up quantities × unit prices. Enter the total on the numpad and press **TOTAL**. Only then does the customer hand over their cash. Subtract the accepted total from their payment, enter the change, and press **CHANGE** to complete the sale. You can click the keys or type dollar amounts with a decimal point (for example, `12.50`), then press Enter. **C** clears an entry; **⌫** removes the last character. Wrong answers allow another attempt while patience continues to run down. Money is only credited after both steps are complete.
-4. **Keep the line moving.** Up to three customers wait at once, and everyone in line loses patience. A fast, first-try answer earns a $0.50 tip. Patience becomes tighter over the first ten days. Pause at any time; switching to another game page or hiding the browser tab pauses automatically.
-5. **Close the books.** Ingredient costs are deducted with each sale. At closing, $12 in daily overhead is charged. The report reconciles sales + tips − ingredients − overhead, along with customers served, customers lost, perfect streaks, and math retries. Closing early also charges overhead and counts waiting customers as lost.
+4. **Keep all three lines moving.** Each line can hold three people, for nine visible customers at once, with a single till. Click a front customer or a numbered line button to choose whom to serve. Each line keeps its own first-in, first-out order. You can change lines before confirming a total, and your partial entry will be remembered. Once cash changes hands, finish giving that customer's change before switching. Waiting customers in every line lose patience. A full shop turns new arrivals away. A fast, first-try answer earns a $0.50 tip; patience becomes tighter over the first ten days. Pause at any time; visiting the menu/upgrades pages or hiding the browser tab pauses automatically.
+5. **Close the books.** Ingredient costs are deducted only with completed sales; price refusals cost no ingredients. At closing, $12 in daily overhead is charged. The report reconciles sales + tips − ingredients − overhead and accounts for every visitor as served, refused on price, left waiting, or turned away by full lines. It also shows conversion, average order value, perfect streaks, and math retries. Closing early charges overhead and settles the remaining lines too.
 6. **Invest in the shop.** Each upgrade has three permanent levels:
 
    | Upgrade       | Benefit per level                    |
    | ------------- | ------------------------------------ |
    | Cozy seating  | 6 extra seconds of customer patience |
-   | Sidewalk sign | 18 percentage points more demand     |
+   | Sidewalk sign | 18% more foot traffic                |
    | Kitchen tools | 5% lower ingredient costs            |
    | Happy plants  | $0.25 extra tip per customer served  |
 
@@ -71,7 +71,7 @@ Menu changes and purchases happen between shifts. Ingredients are bought as need
 
 ## Saves
 
-Progress automatically saves to this browser's `localStorage`, including the menu, bank balance, upgrades, records, an active shift, and whether the current customer is ordering or paying. Reloaded shifts start paused; time away is not simulated. Existing saves from the original counter interface are supported. **Fresh start** resets progress after confirmation. If browser storage is blocked, the game remains playable but cannot persist progress. Saves are local to the device and browser; there is no cloud sync.
+Progress automatically saves to this browser's `localStorage`, including the menu, bank balance, upgrades, records, all three lines, the selected line, and whether the current customer is ordering or paying. Reloaded shifts start paused; time away is not simulated. Existing saves from the original single-queue counter are migrated without resetting progress. **Fresh start** resets progress after confirmation. If browser storage is blocked, the game remains playable but cannot persist progress. Saves are local to the device and browser; there is no cloud sync.
 
 ## Checks
 
@@ -81,7 +81,7 @@ npm run build      # Production bundle
 npm run test:browser
 ```
 
-The browser smoke test starts and stops its own Vite server on port 4174. It exercises recipe creation/editing, invalid prices, upgrades, both cashier stages, the actual numpad keys, incorrect/correct answers, cash disclosure, pause and input preservation, restoring a payment after reload, a full timed shift, reports, early closing, reset, help, and mobile layouts. Screenshots are written to the ignored `test-results/` directory.
+The browser smoke test starts and stops its own Vite server on port 4174. It exercises recipe creation/editing, invalid prices, upgrades, both cashier stages, numpad keys, three visible lines, switching and restoring partial entries, payment locking, visible price refusals, reports, pause/resume, a full timed shift, early closing, reset, help, and mobile layouts. Engine tests also compare buyer conversion and basket sizes across seeded populations at different price levels. Screenshots are written to the ignored `test-results/` directory.
 
 Browser tests use system Chromium at `/usr/bin/chromium` when present. Otherwise, install Playwright's Chromium with `npx playwright install chromium`, or set `CHROMIUM_PATH` to an installed Chromium executable.
 
@@ -91,6 +91,7 @@ Browser tests use system Chromium at `/usr/bin/chromium` when present. Otherwise
 - `src/main.js` — browser interface, game clock, dialogs, and save orchestration.
 - `src/counter-view.js` and `src/counter.css` — first-person counter, customers, order slips, and physical register interface.
 - `src/counter-art.js` — shop interior and full-size customer illustrations.
+- `src/market.css` — three visible lines, waiting customers, and pricing feedback.
 - `src/cashier.js` — decimal entry and editing rules for the register numpad.
 - `src/art.js` — original SVG shop, food, customer, and icon illustrations.
 - `src/style.css` — responsive layout and locally bundled typography.

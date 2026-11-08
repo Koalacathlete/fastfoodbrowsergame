@@ -1,5 +1,6 @@
 import "./style.css";
 import "./counter.css";
+import "./market.css";
 import {
   SHIFT_SECONDS,
   DAILY_RENT,
@@ -10,6 +11,10 @@ import {
   parseMoney,
   itemCost,
   demand,
+  activeOrder,
+  selectLane,
+  laneQueue,
+  priceRatio,
   updateItem,
   buyUpgrade,
   startShift,
@@ -27,6 +32,7 @@ import {
   queueView,
   speechView,
   guestView,
+  noticeView,
 } from "./counter-view.js";
 import { pressKey } from "./cashier.js";
 
@@ -47,6 +53,7 @@ let editing = null;
 let modalFocus = null;
 let toastTimeout;
 let saved = true;
+const cashierDrafts = new Map();
 let cashierDraft = { orderId: null, amount: "" };
 let lastTick = performance.now();
 let saveElapsed = 0;
@@ -119,9 +126,12 @@ function counterPage() {
 }
 
 function registerContent() {
-  const order = state.shift?.queue[0];
+  const order = activeOrder(state);
   const key = order ? `${state.day}-${order.id}-${order.stage}` : null;
-  if (cashierDraft.orderId !== key) cashierDraft = { orderId: key, amount: "" };
+  if (cashierDraft.orderId !== key) {
+    cashierDraft = cashierDrafts.get(key) ?? { orderId: key, amount: "" };
+    if (key) cashierDrafts.set(key, cashierDraft);
+  }
   return registerView(state, cashierDraft);
 }
 
@@ -138,7 +148,7 @@ function menuPage() {
   const d = demand(state);
   return `${pageHeading("THE SECRET INGREDIENT IS YOU.", "Something for every appetite.", "Choose your ingredients. Find your price. Make a name for yourself.", button(`${icon("plus", "", 18)} Create a burger`, "new-burger", "btn-primary", state.menu.filter((i) => i.kind === "burger").length >= 4 || state.shift ? "disabled" : ""))}
     ${state.shift ? pausedNotice() : ""}
-    <div class="menu-strategy"><div class="strategy-icon">${icon("trend", "", 25)}</div><div><h3>A good menu is a balancing act.</h3><p>High margins feel good. Fair prices keep the neighborhood coming back. Ingredients are charged only when you make a sale.</p></div><div class="demand-meter"><span>NEIGHBORHOOD DEMAND</span><strong>${d > 1.15 ? "Looking lively" : d > 0.8 ? "A steady appetite" : "Price-sensitive"}</strong><div><i style="width:${Math.min((d / 1.6) * 100, 100)}%"></i></div></div></div>
+    <div class="menu-strategy"><div class="strategy-icon">${icon("trend", "", 25)}</div><div><h3>A good menu is a balancing act.</h3><p>High margins feel good. Fair prices keep the neighborhood coming back. Customers have different budgets. Value prices encourage extra items; expensive burgers can lose the sale. Ingredients are charged only when you sell.</p></div><div class="demand-meter"><span>NEIGHBORHOOD DEMAND</span><strong>${d > 1.15 ? "Looking lively" : d > 0.8 ? "A steady appetite" : "Price-sensitive"}</strong><div><i style="width:${Math.min((d / 1.6) * 100, 100)}%"></i></div></div></div>
     <div class="section-heading"><h2>Your signature burgers</h2><span class="muted">${state.menu.filter((i) => i.kind === "burger").length} of 4 menu slots filled</span></div>
     <div class="recipe-grid">${state.menu
       .filter((i) => i.kind === "burger")
@@ -149,7 +159,7 @@ function menuPage() {
             .map((id) => INGREDIENTS.find((i) => i.id === id).name)
             .join(
               " · ",
-            )}</p><div class="recipe-economics"><div><span>Ingredient cost</span><strong>${money(itemCost(item, state))}</strong></div><div><span>Profit per burger</span><strong class="green-text">${money(item.price - itemCost(item, state))}</strong></div><div><span>Margin</span><strong>${Math.round(((item.price - itemCost(item, state)) / item.price) * 100)}%</strong></div></div>${button(`${icon("edit", "", 16)} Edit recipe & price`, "edit", "btn-secondary full-width", `data-id="${esc(item.id)}" ${state.shift ? "disabled" : ""}`)}</div></article>`,
+            )}</p><span class="recipe-market-tag">${priceRatio(item) < 0.85 ? "Value price · bigger baskets" : priceRatio(item) < 1.15 ? "Neighborhood price · broad appeal" : priceRatio(item) < 1.5 ? "Premium price · some may pass" : "High price · expect refusals"}</span><div class="recipe-economics"><div><span>Ingredient cost</span><strong>${money(itemCost(item, state))}</strong></div><div><span>Profit per burger</span><strong class="green-text">${money(item.price - itemCost(item, state))}</strong></div><div><span>Margin</span><strong>${Math.round(((item.price - itemCost(item, state)) / item.price) * 100)}%</strong></div></div>${button(`${icon("edit", "", 16)} Edit recipe & price`, "edit", "btn-secondary full-width", `data-id="${esc(item.id)}" ${state.shift ? "disabled" : ""}`)}</div></article>`,
       )
       .join("")}</div>
     <div class="section-heading sides-heading"><div><span class="eyebrow">BETTER TOGETHER</span><h2>A little something on the side</h2></div></div><div class="sides-grid">${state.menu
@@ -181,6 +191,7 @@ function updateLive() {
   if (!shift || page !== "counter") return;
   setText("stat-balance", money(state.balance));
   setText("stat-sales", money(shift.revenue));
+  setText("stat-refused", String(shift.rejected));
   setHTML("stat-served", String(shift.served));
   setHTML(
     "stat-streak",
@@ -193,7 +204,18 @@ function updateLive() {
   );
   const track = document.querySelector("#shift-progress");
   if (track) track.style.width = `${(shift.remaining / SHIFT_SECONDS) * 100}%`;
-  const order = shift.queue[0];
+  for (let lane = 0; lane < 3; lane++) {
+    const head = laneQueue(state, lane)[0];
+    if (!head || head.stage === "declined") continue;
+    const bar = document.querySelector(`[data-patience-id="${head.id}"]`);
+    if (bar) {
+      bar.style.width = `${Math.max(0, (head.patience / head.maxPatience) * 100)}%`;
+      bar.classList.toggle("urgent", head.patience < 10);
+    }
+    const clock = document.querySelector(`[data-clock-id="${head.id}"]`);
+    if (clock) clock.textContent = `${Math.ceil(head.patience)}s`;
+  }
+  const order = activeOrder(state);
   if (order) {
     setText("patience-label", `${Math.ceil(order.patience)}s`);
     const patience = document.querySelector("#patience-progress");
@@ -276,7 +298,7 @@ function openEditor(id) {
             .map((i) => ingredientOption(i, false))
             .join("")}</fieldset>`
         : '<div class="side-editor-note">Your supplier handles the recipe. You handle the price.</div>'
-    }<label for="recipe-price">Selling price<div class="money-input editor-price"><span>$</span><input id="recipe-price" name="price" inputmode="decimal" value="${(editing.price / 100).toFixed(2)}" maxlength="6" required /></div></label><p class="field-hint">A higher price means more margin, but fewer customers.</p></div></div><p id="recipe-error" class="form-error" role="status"></p><div class="modal-actions">${id && burger && state.menu.filter((i) => i.kind === "burger").length > 1 ? button("Remove from menu", "delete-recipe", "btn-text danger-text", `data-id="${esc(id)}"`) : "<span></span>"}<div>${button("Cancel", "dismiss", "btn-secondary")}<button class="btn btn-primary" type="submit">${icon("check", "", 17)} Save to menu</button></div></div></form>`,
+    }<label for="recipe-price">Selling price<div class="money-input editor-price"><span>$</span><input id="recipe-price" name="price" inputmode="decimal" value="${(editing.price / 100).toFixed(2)}" maxlength="6" required /></div></label><p class="field-hint">Higher prices raise margin, but customers may buy less or walk away.</p></div></div><p id="recipe-error" class="form-error" role="status"></p><div class="modal-actions">${id && burger && state.menu.filter((i) => i.kind === "burger").length > 1 ? button("Remove from menu", "delete-recipe", "btn-text danger-text", `data-id="${esc(id)}"`) : "<span></span>"}<div>${button("Cancel", "dismiss", "btn-secondary")}<button class="btn btn-primary" type="submit">${icon("check", "", 17)} Save to menu</button></div></div></form>`,
     "recipe-modal",
   );
 }
@@ -303,7 +325,7 @@ function showHelp() {
     render();
   }
   modal(
-    `<span class="handbook-icon">${icon("burger", "", 38)}</span><div class="eyebrow">THE OWNER’S HANDBOOK</div><h2 id="modal-title">A little hustle.<br>A lot of heart.</h2><p class="modal-intro">Welcome to The Daily Bun. Your shop, your menu, your math.</p><div class="handbook-steps"><div><span>01</span><div><h3>Build something delicious.</h3><p>Choose a patty and toppings in Menu builder. Every ingredient has a cost. Set a selling price above that cost, but keep it fair to attract customers.</p></div></div><div><span>02</span><div><h3>Open up. Think on your feet.</h3><p>Each shift lasts 90 seconds. Add up quantities × menu prices, then subtract the total from the cash received to find the change. Enter the total on your register and press TOTAL. Your customer will then hand over cash. Enter their change and press CHANGE to finish the sale.</p><div class="math-example">2 burgers × $6.50 + 1 fries × $2.50 = <strong>$15.50</strong><br>$20.00 cash − $15.50 total = <strong>$4.50 change</strong></div></div></div><div><span>03</span><div><h3>Turn good math into a good business.</h3><p>Ingredients are deducted with each sale; ${money(DAILY_RENT)} overhead is charged at closing. Fast, first-try answers earn a $0.50 tip. Reinvest your profit in upgrades.</p></div></div></div><div class="handbook-note">${icon("clock", "", 18)} Customers in the lineup lose patience too. Pause whenever you need a breather. Progress saves on this device; reloaded shifts resume paused.</div>${button("Let’s make something good " + icon("arrow", "", 17), "dismiss", "btn-primary full-width")}`,
+    `<span class="handbook-icon">${icon("burger", "", 38)}</span><div class="eyebrow">THE OWNER’S HANDBOOK</div><h2 id="modal-title">A little hustle.<br>A lot of heart.</h2><p class="modal-intro">Welcome to The Daily Bun. Your shop, your menu, your math.</p><div class="handbook-steps"><div><span>01</span><div><h3>Build something delicious.</h3><p>Choose a patty and toppings in Menu builder. Every ingredient has a cost. Set a selling price above that cost, but keep it fair to attract customers.</p></div></div><div><span>02</span><div><h3>Open up. Think on your feet.</h3><p>Each shift lasts 90 seconds. Add up quantities × menu prices, then subtract the total from the cash received to find the change. Enter the total on your register and press TOTAL. Your customer will then hand over cash. Enter their change and press CHANGE to finish the sale.</p><div class="math-example">2 burgers × $6.50 + 1 fries × $2.50 = <strong>$15.50</strong><br>$20.00 cash − $15.50 total = <strong>$4.50 change</strong></div></div></div><div><span>03</span><div><h3>Turn good math into a good business.</h3><p>Ingredients are deducted with each sale; ${money(DAILY_RENT)} overhead is charged at closing. Fast, first-try answers earn a $0.50 tip. Reinvest your profit in upgrades.</p></div></div></div><div class="handbook-note">${icon("clock", "", 18)} Three lines share one till. Click a front customer to switch lines; finish their change before switching again. Everyone waiting loses patience too. Prices affect both willingness to buy and order sizes. Pause whenever you need a breather. Progress saves on this device; reloaded shifts resume paused.</div>${button("Let’s make something good " + icon("arrow", "", 17), "dismiss", "btn-primary full-width")}`,
     "help-modal",
   );
 }
@@ -312,7 +334,7 @@ function showReport() {
   const report = state.lastReport;
   if (!report) return;
   modal(
-    `<div class="report-badge">${icon(report.profit >= 0 ? "star" : "sun", "", 38)}</div><div class="eyebrow">DAY ${String(report.day).padStart(2, "0")} · THAT’S A WRAP</div><h2 id="modal-title">${report.served === 0 ? "Tomorrow is a fresh start." : report.profit < 0 ? "A little wiser. A little better." : "Now that’s a good day."}</h2><p class="modal-intro">${report.served === 0 ? "Your next great shift is still ahead of you." : `You fed ${report.served} hungry ${report.served === 1 ? "neighbor" : "neighbors"}. Here’s how it all adds up.`}</p><div class="report-profit ${report.profit < 0 ? "negative" : ""}"><span>NET PROFIT</span><strong>${report.profit >= 0 ? "+" : "−"}${money(Math.abs(report.profit))}</strong><span>After ingredients and daily overhead</span></div><div class="report-ledger"><div><span>Menu sales</span><strong>${money(report.revenue)}</strong></div><div><span>A little extra in tips</span><strong class="green-text">+${money(report.tips)}</strong></div><div><span>Ingredient costs</span><strong>−${money(report.costs)}</strong></div><div><span>Daily overhead</span><strong>−${money(report.rent)}</strong></div></div><div class="report-metrics"><div><strong>${report.served}</strong><span>Served</span></div><div><strong>${report.lost}</strong><span>Walked away</span></div><div><strong>${report.bestStreak}</strong><span>Best streak</span></div><div><strong>${report.mistakes}</strong><span>Math retries</span></div></div><p class="report-balance">Your shop balance <strong>${money(state.balance)}</strong></p><div class="report-actions">${button("Invest in your shop " + icon("arrow", "", 17), "report-upgrades", "btn-primary full-width")}${button("Back to the counter", "dismiss", "btn-text full-width")}</div>`,
+    `<div class="report-badge">${icon(report.profit >= 0 ? "star" : "sun", "", 38)}</div><div class="eyebrow">DAY ${String(report.day).padStart(2, "0")} · THAT’S A WRAP</div><h2 id="modal-title">${report.served === 0 ? "Tomorrow is a fresh start." : report.profit < 0 ? "A little wiser. A little better." : "Now that’s a good day."}</h2><p class="modal-intro">${report.served === 0 ? "Your next great shift is still ahead of you." : `You fed ${report.served} hungry ${report.served === 1 ? "neighbor" : "neighbors"}. Here’s how it all adds up.`}</p><div class="report-profit ${report.profit < 0 ? "negative" : ""}"><span>NET PROFIT</span><strong>${report.profit >= 0 ? "+" : "−"}${money(Math.abs(report.profit))}</strong><span>After ingredients and daily overhead</span></div><div class="report-ledger"><div><span>Menu sales</span><strong>${money(report.revenue)}</strong></div><div><span>A little extra in tips</span><strong class="green-text">+${money(report.tips)}</strong></div><div><span>Ingredient costs</span><strong>−${money(report.costs)}</strong></div><div><span>Daily overhead</span><strong>−${money(report.rent)}</strong></div></div><div class="report-market-summary">${report.visitors ?? report.served + report.lost} visitors · ${Math.round((report.served / Math.max(1, report.visitors ?? report.served + report.lost)) * 100)}% bought · ${money(report.served ? Math.round(report.revenue / report.served) : 0)} average order</div><div class="report-metrics market-metrics"><div><strong>${report.served}</strong><span>Served</span></div><div><strong>${report.rejected ?? 0}</strong><span>Price refusals</span></div><div><strong>${report.lost}</strong><span>Left waiting</span></div><div><strong>${report.turnedAway ?? 0}</strong><span>Lines full</span></div><div><strong>${report.bestStreak}</strong><span>Best streak</span></div><div><strong>${report.mistakes}</strong><span>Math retries</span></div></div><p class="report-balance">Your shop balance <strong>${money(state.balance)}</strong></p><div class="report-actions">${button("Invest in your shop " + icon("arrow", "", 17), "report-upgrades", "btn-primary full-width")}${button("Back to the counter", "dismiss", "btn-text full-width")}</div>`,
     "report-modal",
   );
 }
@@ -332,6 +354,7 @@ function actionHandler(event) {
     render();
     window.scrollTo({ top: 0, behavior: "instant" });
   } else if (action === "start") {
+    cashierDrafts.clear();
     startShift(state);
     lastTick = performance.now();
     persist();
@@ -347,6 +370,15 @@ function actionHandler(event) {
       document
         .querySelector("#register-amount")
         ?.focus({ preventScroll: true });
+  } else if (action === "select-line") {
+    const error = selectLane(state, Number(target.dataset.lane));
+    if (error) {
+      toast(error);
+      return;
+    }
+    persist();
+    refreshCounter();
+    document.querySelector("#register-amount")?.focus({ preventScroll: true });
   } else if (action === "register-key") {
     const input = document.querySelector("#register-amount");
     if (!input || input.disabled) return;
@@ -437,8 +469,9 @@ app.addEventListener("input", (event) => {
 app.addEventListener("submit", (event) => {
   if (event.target.id !== "cashier-form") return;
   event.preventDefault();
-  const order = state.shift?.queue[0];
-  if (!order) return;
+  const order = activeOrder(state);
+  if (!order || order.stage === "declined" || !event.target.elements.amount)
+    return;
   const result =
     order.stage === "total"
       ? submitOrderTotal(state, event.target.elements.amount.value)
@@ -553,7 +586,7 @@ setInterval(() => {
   const dt = Math.min((now - lastTick) / 1000, 2);
   lastTick = now;
   if (!state.shift || state.shift.paused) return;
-  const previous = state.shift.queue[0]?.id;
+  const previous = activeOrder(state)?.id;
   const events = tick(state, dt);
   if (events.some((i) => i.type === "closed")) {
     persist();
@@ -562,8 +595,16 @@ setInterval(() => {
     return;
   }
   if (events.length && page === "counter") {
-    if (previous !== state.shift.queue[0]?.id) refreshCounter();
-    else setHTML("customer-queue", queueView(state));
+    if (previous !== activeOrder(state)?.id) refreshCounter();
+    else if (
+      events.some((event) =>
+        ["arrived", "left", "rejected"].includes(event.type),
+      )
+    ) {
+      setHTML("customer-queue", queueView(state));
+      setHTML("counter-guest", guestView(state));
+    }
+    setHTML("market-note", noticeView(state));
   }
   if (events.some((i) => i.type === "left"))
     toast("A customer had to leave. The next one is a fresh start.");
