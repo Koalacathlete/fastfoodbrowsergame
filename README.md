@@ -33,13 +33,13 @@ For the dashboard setup:
 1. In the [Render dashboard](https://dashboard.render.com/), select **New → Static Site** and connect the GitHub repository. Grant Render repository access if prompted.
 2. Use these settings:
 
-   | Setting | Value |
-   | --- | --- |
-   | Name | `the-daily-bun` (or another available name) |
-   | Branch | `main` |
-   | Root directory | Leave blank; `package.json` is at the repository root |
-   | Build command | `npm ci --include=dev && npm run build` |
-   | Publish directory | `dist` |
+   | Setting           | Value                                                 |
+   | ----------------- | ----------------------------------------------------- |
+   | Name              | `the-daily-bun` (or another available name)           |
+   | Branch            | `main`                                                |
+   | Root directory    | Leave blank; `package.json` is at the repository root |
+   | Build command     | `npm ci --include=dev && npm run build`               |
+   | Publish directory | `dist`                                                |
 
 3. Create the static site. When the deployment finishes, open the HTTPS address Render assigns to it, then click **Open for day 1**. Check that you can serve a customer and that refreshing restores the shift paused.
 
@@ -55,7 +55,7 @@ Saves remain local to each browser and origin. A save made during local developm
 
 1. **Make your menu.** Start with three signature burgers, fries, and lemonade. Edit names and prices, choose a patty and individual toppings, or create a fourth burger. The menu builder shows ingredient costs, profit per sale, and margins. A burger needs one bun and one patty; toppings are optional. Prices must exceed food costs.
 2. **Open for the day.** A shift lasts 90 seconds. Customers choose one or two burgers and may add a side or drink. From day three, orders can include a third line item. Higher prices reduce demand, while a sidewalk sign increases it.
-3. **Ring up each order.** Calculate the sum of quantities × unit prices, then subtract that total from the cash received. Enter the **order total** and **change due** in dollars, and press Enter or Serve customer. Both answers must be correct. A wrong answer allows another attempt, but customers keep losing patience.
+3. **Work the till.** You play from behind the counter, with a customer in front of you and a cash register in the foreground. Read their order slip and add up quantities × unit prices. Enter the total on the numpad and press **TOTAL**. Only then does the customer hand over their cash. Subtract the accepted total from their payment, enter the change, and press **CHANGE** to complete the sale. You can click the keys or type dollar amounts with a decimal point (for example, `12.50`), then press Enter. **C** clears an entry; **⌫** removes the last character. Wrong answers allow another attempt while patience continues to run down. Money is only credited after both steps are complete.
 4. **Keep the line moving.** Up to three customers wait at once, and everyone in line loses patience. A fast, first-try answer earns a $0.50 tip. Patience becomes tighter over the first ten days. Pause at any time; switching to another game page or hiding the browser tab pauses automatically.
 5. **Close the books.** Ingredient costs are deducted with each sale. At closing, $12 in daily overhead is charged. The report reconciles sales + tips − ingredients − overhead, along with customers served, customers lost, perfect streaks, and math retries. Closing early also charges overhead and counts waiting customers as lost.
 6. **Invest in the shop.** Each upgrade has three permanent levels:
@@ -71,7 +71,7 @@ Menu changes and purchases happen between shifts. Ingredients are bought as need
 
 ## Saves
 
-Progress automatically saves to this browser's `localStorage`, including the menu, bank balance, upgrades, records, and an active shift. Reloaded shifts start paused; time away is not simulated. **Fresh start** resets progress after confirmation. If browser storage is blocked, the game remains playable but cannot persist progress. Saves are local to the device and browser; there is no cloud sync.
+Progress automatically saves to this browser's `localStorage`, including the menu, bank balance, upgrades, records, an active shift, and whether the current customer is ordering or paying. Reloaded shifts start paused; time away is not simulated. Existing saves from the original counter interface are supported. **Fresh start** resets progress after confirmation. If browser storage is blocked, the game remains playable but cannot persist progress. Saves are local to the device and browser; there is no cloud sync.
 
 ## Checks
 
@@ -81,7 +81,7 @@ npm run build      # Production bundle
 npm run test:browser
 ```
 
-The browser smoke test starts and stops its own Vite server on port 4174. It exercises recipe creation/editing, invalid prices, upgrades, incorrect/correct cashier answers, pause and input preservation, reload/resume, a full timed shift, reports, early closing, reset, help, and mobile layouts. Screenshots are written to the ignored `test-results/` directory.
+The browser smoke test starts and stops its own Vite server on port 4174. It exercises recipe creation/editing, invalid prices, upgrades, both cashier stages, the actual numpad keys, incorrect/correct answers, cash disclosure, pause and input preservation, restoring a payment after reload, a full timed shift, reports, early closing, reset, help, and mobile layouts. Screenshots are written to the ignored `test-results/` directory.
 
 Browser tests use system Chromium at `/usr/bin/chromium` when present. Otherwise, install Playwright's Chromium with `npx playwright install chromium`, or set `CHROMIUM_PATH` to an installed Chromium executable.
 
@@ -89,6 +89,9 @@ Browser tests use system Chromium at `/usr/bin/chromium` when present. Otherwise
 
 - `src/game.js` — game rules and accounting; all money is stored as integer cents.
 - `src/main.js` — browser interface, game clock, dialogs, and save orchestration.
+- `src/counter-view.js` and `src/counter.css` — first-person counter, customers, order slips, and physical register interface.
+- `src/counter-art.js` — shop interior and full-size customer illustrations.
+- `src/cashier.js` — decimal entry and editing rules for the register numpad.
 - `src/art.js` — original SVG shop, food, customer, and icon illustrations.
 - `src/style.css` — responsive layout and locally bundled typography.
 - `tests/` — engine tests and Chromium smoke tests.

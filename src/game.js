@@ -302,6 +302,8 @@ export function createOrder(state, random = Math.random) {
     patience: maxPatience,
     maxPatience,
     mistakes: 0,
+    stage: "total",
+    acceptedTotal: null,
   };
 }
 
@@ -361,25 +363,53 @@ export function tick(state, seconds, random = Math.random) {
   return events;
 }
 
-export function serveOrder(state, totalInput, changeInput) {
+export function submitOrderTotal(state, totalInput) {
   const shift = state.shift;
   if (!shift || shift.paused || !shift.queue.length)
     return { ok: false, message: "Wait for a customer, then ring them up." };
   const order = shift.queue[0];
+  if (order.stage !== "total")
+    return {
+      ok: false,
+      message: "The total is rung up. Enter their change next.",
+    };
   const total = parseMoney(totalInput);
-  const change = parseMoney(changeInput);
-  if (total === null || change === null)
-    return { ok: false, message: "Enter both amounts in dollars, like 12.50." };
-  if (total !== order.total || change !== order.cash - order.total) {
+  if (total === null)
+    return { ok: false, message: "Enter the total in dollars, like 12.50." };
+  if (total !== order.total) {
     order.mistakes += 1;
     shift.mistakes += 1;
     shift.streak = 0;
     return {
       ok: false,
-      message:
-        total !== order.total
-          ? "The order total is a little off. Check quantities and try again."
-          : "Check your change: cash received minus the order total.",
+      message: "The total is a little off. Check the quantities and try again.",
+    };
+  }
+  order.stage = "change";
+  order.acceptedTotal = total;
+  return { ok: true, stage: "change", total, cash: order.cash };
+}
+
+export function serveOrder(state, changeInput) {
+  const shift = state.shift;
+  if (!shift || shift.paused || !shift.queue.length)
+    return { ok: false, message: "Wait for a customer, then ring them up." };
+  const order = shift.queue[0];
+  if (order.stage !== "change" || order.acceptedTotal !== order.total)
+    return {
+      ok: false,
+      message: "Ring up the order total before taking payment.",
+    };
+  const change = parseMoney(changeInput);
+  if (change === null)
+    return { ok: false, message: "Enter the change in dollars, like 4.50." };
+  if (change !== order.cash - order.total) {
+    order.mistakes += 1;
+    shift.mistakes += 1;
+    shift.streak = 0;
+    return {
+      ok: false,
+      message: "Check the change: cash received minus the total.",
     };
   }
   const speedTip =
@@ -494,6 +524,16 @@ export function loadState(storage) {
         )
       )
         throw new Error("Invalid shift");
+      for (const order of state.shift.queue) {
+        // Existing saves predate the two-step register. Keep their progress.
+        order.stage ??= "total";
+        order.acceptedTotal ??= null;
+        if (
+          !["total", "change"].includes(order.stage) ||
+          (order.stage === "change" && order.acceptedTotal !== order.total)
+        )
+          throw new Error("Invalid cashier stage");
+      }
       state.shift.paused = true;
     }
     return state;

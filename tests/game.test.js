@@ -10,6 +10,7 @@ import {
   startShift,
   tick,
   serveOrder,
+  submitOrderTotal,
   finishShift,
   loadState,
   saveState,
@@ -19,11 +20,9 @@ import {
 const fixed = () => 0.5;
 const ringUp = (state) => {
   const order = state.shift.queue[0];
-  return serveOrder(
-    state,
-    (order.total / 100).toFixed(2),
-    ((order.cash - order.total) / 100).toFixed(2),
-  );
+  const first = submitOrderTotal(state, (order.total / 100).toFixed(2));
+  if (!first.ok) return first;
+  return serveOrder(state, ((order.cash - order.total) / 100).toFixed(2));
 };
 
 test("money is parsed as exact cents and malformed values are rejected", () => {
@@ -79,18 +78,42 @@ test("ingredient costs, pricing, and demand reflect the actual menu", () => {
   );
 });
 
-test("cashier requires the total AND change; mistakes do not credit a sale", () => {
+test("cashier accepts the total before revealing payment and only credits correct change", () => {
   const state = initialState();
   startShift(state, fixed);
   const order = structuredClone(state.shift.queue[0]);
-  assert.equal(serveOrder(state, "1.00", "1.00").ok, false);
+  assert.equal(order.stage, "total");
+  assert.equal(
+    serveOrder(state, "0").ok,
+    false,
+    "payment cannot skip the total",
+  );
+  assert.equal(submitOrderTotal(state, "1.00").ok, false);
   assert.equal(state.balance, 12000);
   assert.equal(state.shift.served, 0);
   assert.equal(
-    serveOrder(state, (order.total / 100).toFixed(2), "0").ok,
-    false,
+    submitOrderTotal(state, (order.total / 100).toFixed(2)).ok,
+    true,
   );
-  const result = ringUp(state);
+  assert.equal(state.shift.queue[0].stage, "change");
+  assert.equal(state.shift.queue[0].acceptedTotal, order.total);
+  assert.equal(
+    state.balance,
+    12000,
+    "ringing up the total does not credit money",
+  );
+  assert.equal(state.shift.revenue, 0);
+  assert.equal(
+    submitOrderTotal(state, "1.00").ok,
+    false,
+    "accepted total cannot be re-entered",
+  );
+  assert.equal(serveOrder(state, "0").ok, false);
+  assert.equal(state.balance, 12000);
+  const result = serveOrder(
+    state,
+    ((order.cash - order.total) / 100).toFixed(2),
+  );
   assert.equal(result.ok, true);
   assert.equal(result.tip, 0, "mistakes forfeit the speed tip");
   assert.equal(state.balance, 12000 + order.total - order.cost);
@@ -238,4 +261,37 @@ test("saves persist progress and active shifts reload paused without charging ov
     }),
     false,
   );
+});
+
+test("payment stage survives reload and legacy active orders migrate without losing progress", () => {
+  const state = initialState();
+  startShift(state, fixed);
+  const storage = {
+    value: "",
+    getItem() {
+      return this.value;
+    },
+    setItem(key, value) {
+      this.value = value;
+    },
+  };
+  const order = state.shift.queue[0];
+  submitOrderTotal(state, (order.total / 100).toFixed(2));
+  saveState(state, storage);
+  let loaded = loadState(storage);
+  assert.equal(loaded.shift.queue[0].stage, "change");
+  assert.equal(loaded.shift.queue[0].acceptedTotal, order.total);
+  assert.equal(loaded.shift.paused, true);
+  assert.equal(loaded.balance, 12000);
+  delete state.shift.queue[0].stage;
+  delete state.shift.queue[0].acceptedTotal;
+  saveState(state, storage);
+  loaded = loadState(storage);
+  assert.equal(loaded.shift.queue[0].stage, "total");
+  assert.equal(loaded.shift.queue[0].acceptedTotal, null);
+  assert.equal(loaded.balance, 12000);
+  state.shift.queue[0].stage = "change";
+  state.shift.queue[0].acceptedTotal = 1;
+  saveState(state, storage);
+  assert.deepEqual(loadState(storage), initialState());
 });

@@ -1,4 +1,5 @@
 import "./style.css";
+import "./counter.css";
 import {
   SHIFT_SECONDS,
   DAILY_RENT,
@@ -14,11 +15,20 @@ import {
   startShift,
   tick,
   serveOrder,
+  submitOrderTotal,
   finishShift,
   loadState,
   saveState,
 } from "./game.js";
-import { icon, burgerArt, avatarArt, storefrontArt } from "./art.js";
+import { icon, burgerArt } from "./art.js";
+import {
+  counterView,
+  registerView,
+  queueView,
+  speechView,
+  guestView,
+} from "./counter-view.js";
+import { pressKey } from "./cashier.js";
 
 let storage;
 try {
@@ -37,7 +47,7 @@ let editing = null;
 let modalFocus = null;
 let toastTimeout;
 let saved = true;
-let cashierDraft = { orderId: null, total: "", change: "" };
+let cashierDraft = { orderId: null, amount: "" };
 let lastTick = performance.now();
 let saveElapsed = 0;
 const app = document.querySelector("#app");
@@ -50,19 +60,8 @@ const esc = (value) =>
         char
       ],
   );
-const dayName = () =>
-  [
-    "Monday",
-    "Tuesday",
-    "Wednesday",
-    "Thursday",
-    "Friday",
-    "Saturday",
-    "Sunday",
-  ][(state.day - 1) % 7];
 const timeText = (seconds) =>
   `${Math.floor(Math.ceil(seconds) / 60)}:${String(Math.ceil(seconds) % 60).padStart(2, "0")}`;
-const badge = (text, cls = "") => `<span class="badge ${cls}">${text}</span>`;
 const button = (text, action, cls = "btn-primary", extra = "") =>
   `<button class="btn ${cls}" data-action="${action}" ${extra}>${text}</button>`;
 
@@ -84,6 +83,11 @@ function toast(message) {
 }
 
 function render() {
+  if (page === "counter") {
+    app.innerHTML = counterPage();
+    updateLive();
+    return;
+  }
   const navItems = [
     ["counter", "counter", "The counter"],
     ["menu", "menu", "Menu builder"],
@@ -110,67 +114,24 @@ function pageHeading(kicker, title, subtitle, aside = "") {
   return `<section class="page-heading"><div><div class="eyebrow">${kicker}</div><h1>${title}</h1><p>${subtitle}</p></div>${aside}</section>`;
 }
 
-function stats() {
-  return `<div class="stats-grid">
-    <div class="stat-card"><span class="stat-icon">${icon("wallet")}</span><div><span class="stat-label">Shop balance</span><strong id="stat-balance">${money(state.balance)}</strong><span class="stat-foot">A little seed money. A lot of potential.</span></div></div>
-    <div class="stat-card"><span class="stat-icon peach">${icon("trend")}</span><div><span class="stat-label">${state.shift ? "Today’s sales" : "Last shift’s sales"}</span><strong id="stat-sales">${money(state.shift?.revenue ?? state.lastReport?.revenue ?? 0)}</strong><span class="stat-foot" id="stat-sales-foot">${state.lastReport && !state.shift ? `Day ${state.lastReport.day} is in the books` : "Every order is a fresh opportunity"}</span></div></div>
-    <div class="stat-card"><span class="stat-icon yellow">${icon("people")}</span><div><span class="stat-label">Customers served</span><strong id="stat-served">${state.shift?.served ?? state.lifetime.served}<small>${state.shift ? "this shift" : "all time"}</small></strong><span class="stat-foot" id="stat-served-foot">${state.shift ? "One happy customer at a time" : "Your neighborhood is waiting"}</span></div></div>
-    <div class="stat-card"><span class="stat-icon lavender">${icon("star")}</span><div><span class="stat-label">Best perfect streak</span><strong id="stat-streak">${Math.max(state.lifetime.bestStreak, state.shift?.bestStreak ?? 0)}<small>orders</small></strong><span class="stat-foot">First try. Right total. Right change.</span></div></div>
-  </div>`;
-}
-
 function counterPage() {
-  return `${pageHeading("A FRESH DAY. A FRESH START.", "Good food. Quick thinking.", "Your neighborhood burger shop, with a side of mental math.", `<div class="day-card">${icon("sun", "", 22)}<div><strong>Day ${String(state.day).padStart(2, "0")}</strong><span>${dayName()} <span>·</span> ${state.shift ? "On the clock" : "Let’s make it a good one"}</span></div></div>`)}
-    ${stats()}
-    <div class="counter-grid ${state.shift ? "is-live" : ""}">
-      <section class="shop-card" aria-label="Your restaurant">
-        <div class="panel-heading"><div><span class="eyebrow">YOUR LITTLE EMPIRE</span><h2>The Daily Bun ${icon("leaf", "", 19)}</h2></div><span id="shop-status" class="badge"><span class="status-dot"></span>${state.shift ? (state.shift.paused ? "Shift paused" : "Open for business") : "Getting ready"}</span></div>
-        <div class="shop-scene">${storefrontArt(!!state.shift, state.upgrades.plants, state.upgrades.seating, state.upgrades.sign)}<div class="scene-label">${icon("sun", "", 14)} A fine day for a burger</div></div>
-        <div class="shift-panel" id="shift-panel">${shiftPanel()}</div>
-      </section>
-      <section class="register-card" aria-label="Cash register" id="register-card">${registerContent()}</section>
-    </div>
-    <section class="menu-overview"><div class="section-heading"><div><span class="eyebrow">MADE WITH LOVE. PRICED BY YOU.</span><h2>On the menu <span class="count-label">${state.menu.filter((i) => i.kind === "burger").length} signatures</span></h2></div><button class="text-button" data-action="nav" data-page="menu">Manage menu ${icon("arrow", "", 17)}</button></div>
-    <div class="menu-preview-grid">${state.menu
-      .filter((i) => i.kind === "burger")
-      .map(
-        (item, index) =>
-          `<button class="menu-preview-card" data-action="edit" data-id="${esc(item.id)}"><div class="preview-art art-${index % 4}">${burgerArt(item)}<span class="recipe-number">NO. 0${index + 1}</span></div><div class="preview-info"><div><h3>${esc(item.name)}</h3><p>${item.ingredients.length} ingredients <span>·</span> ${money(itemCost(item, state))} food cost</p></div><strong>${money(item.price)}</strong></div><div class="preview-bottom"><span><span class="little-dot"></span>${Math.round(((item.price - itemCost(item, state)) / item.price) * 100)}% profit margin</span><span class="edit-recipe">View recipe ${icon("chevron", "", 13)}</span></div></button>`,
-      )
-      .join("")}</div>
-    <div class="menu-note">${icon("spark", "", 16)} On the side: ${state.menu
-      .filter((i) => i.kind !== "burger")
-      .map((i) => `${esc(i.name)} <strong>${money(i.price)}</strong>`)
-      .join(
-        '<span class="note-divider">/</span>',
-      )}<span class="rent-note">Daily overhead ${money(DAILY_RENT)} <span>·</span> Ingredients charged per sale</span></div></section>`;
-}
-
-function shiftPanel() {
-  if (!state.shift)
-    return `<div class="prep-copy"><span class="prep-icon">${icon("shop", "", 24)}</span><div><h3>Your next chapter is on the grill.</h3><p>Menu set? Apron on? Your first customer is just outside.</p></div></div><div class="shift-actions"><span>${icon("clock", "", 15)} 90-second shifts <span>·</span> ${money(DAILY_RENT)} overhead</span>${button(`Open for day ${state.day} ${icon("arrow", "", 18)}`, "start")}</div>`;
-  return `<div class="shift-live-heading"><div class="shift-live-title"><span class="live-dot"></span><strong id="shift-title">${state.shift.paused ? "Take a breather. You’ve got this." : "The grill is hot. You’re up."}</strong></div><strong class="shift-timer" id="shift-time">${timeText(state.shift.remaining)}</strong></div><div class="shift-track"><span id="shift-progress" style="width:${(state.shift.remaining / SHIFT_SECONDS) * 100}%"></span></div><div class="shift-controls"><span id="shift-detail">${state.shift.served} served <span>·</span> ${state.shift.lost} walked away</span><div>${button(`${icon(state.shift.paused ? "play" : "pause", "", 15)} ${state.shift.paused ? "Resume" : "Pause"}`, "pause", "btn-small btn-ghost")}${button("Close early", "close-shift", "btn-small btn-ghost")}</div></div><div id="customer-queue" class="customer-queue">${queueContent()}</div>`;
-}
-
-function queueContent() {
-  const shift = state.shift;
-  if (!shift) return "";
-  return `<span class="queue-label">THE LINEUP</span>${shift.queue.length ? shift.queue.map((order, index) => `<div class="queue-person ${index === 0 ? "current" : ""}"><div class="customer-avatar">${avatarArt(order.avatar)}</div><div><strong>${esc(order.customer)}</strong><span>${index === 0 ? "At the counter" : "Waiting their turn"}</span></div>${index === 0 ? '<span class="at-counter-dot"></span>' : ""}</div>`).join("") : '<span class="empty-queue">A moment to breathe. Someone will be along soon.</span>'}`;
+  return counterView(state, { register: registerContent(), saved });
 }
 
 function registerContent() {
-  const shift = state.shift;
-  const order = shift?.queue[0];
-  const orderKey = order ? `${state.day}-${order.id}` : null;
-  if (order && cashierDraft.orderId !== orderKey)
-    cashierDraft = { orderId: orderKey, total: "", change: "" };
-  if (!shift || !order)
-    return `<div class="register-heading"><span>${icon("counter", "", 18)} THE REGISTER</span>${badge(shift?.paused ? "PAUSED" : shift ? "READY" : "STANDBY", "badge-neutral")}</div><div class="register-empty"><div class="receipt-illustration"><div class="receipt-logo">${icon("burger", "", 30)}</div><div class="receipt-dash"></div><div class="receipt-line"></div><div class="receipt-line short"></div><div class="receipt-dash"></div><span>GOOD THINGS<br>ARE ON THE WAY.</span><div class="receipt-dash"></div><div class="receipt-star">✳</div></div><h3>${shift ? (shift.paused ? "A well-earned breather." : "A quiet moment.") : "Ready to take an order?"}</h3><p>${shift ? (shift.paused ? "Resume your shift to welcome the next customer." : "The next customer will be here shortly. Keep an eye on the lineup.") : "Open your shop, greet your customers, and give that brain a little workout."}</p></div><div class="register-tip">${icon("spark", "", 18)}<p>${shift ? "Quick, accurate orders earn a $0.50 tip. Happy plants add a little extra." : "<strong>The house rule</strong>Calculate the order total, then the change. Get both right to make the sale."}</p></div>${shift?.paused ? button(`${icon("play", "", 16)} Resume shift`, "pause", "btn-primary full-width") : ""}`;
-  return `<div class="register-heading"><span>${icon("counter", "", 18)} THE REGISTER</span>${badge(shift.paused ? "PAUSED" : `ORDER #${String(order.id).padStart(3, "0")}`, "badge-neutral")}</div>
-    <div class="customer-heading"><div class="customer-avatar large-avatar">${avatarArt(order.avatar)}</div><div><h3>${esc(order.customer)}’s order</h3><p>${order.mistakes ? "No rush. Double-check your math." : "“Hey! Could I get…”"}</p></div><span class="patience-tag" id="patience-label">${Math.ceil(order.patience)}s</span></div>
-    <div class="patience-track"><span id="patience-progress" style="width:${(order.patience / order.maxPatience) * 100}%"></span></div>
-    <div class="order-ticket"><div class="ticket-columns"><span>ITEM</span><span>QTY × PRICE</span></div><div id="order-lines">${order.lines.map((line) => `<div class="order-line" data-price="${line.price}" data-qty="${line.qty}"><span>${esc(line.name)}</span><strong>${line.qty} <span>×</span> ${money(line.price)}</strong></div>`).join("")}</div><div class="cash-tendered"><span>${icon("wallet", "", 17)} Cash received</span><strong id="cash-received" data-cents="${order.cash}">${money(order.cash)}</strong></div></div>
-    <form id="cashier-form" novalidate><div class="cashier-inputs"><label for="order-total">Order total<div class="money-input"><span>$</span><input id="order-total" name="total" value="${esc(cashierDraft.total)}" inputmode="decimal" type="text" placeholder="0.00" autocomplete="off" ${shift.paused ? "disabled" : ""} maxlength="8" required aria-describedby="cashier-feedback" /></div></label><label for="change-due">Change due<div class="money-input"><span>$</span><input id="change-due" name="change" value="${esc(cashierDraft.change)}" inputmode="decimal" type="text" placeholder="0.00" autocomplete="off" ${shift.paused ? "disabled" : ""} maxlength="8" required aria-describedby="cashier-feedback" /></div></label></div><p class="cashier-feedback" id="cashier-feedback" role="status">${shift.paused ? "Your shift is paused. Resume when you’re ready." : "A little mental math. You’ve got this."}</p><button type="submit" class="btn btn-primary full-width" ${shift.paused ? "disabled" : ""}>${icon("check", "", 19)} Serve customer <kbd>↵</kbd></button></form><div class="register-footnote">${icon("spark", "", 14)} Fast + accurate = happy customers & extra tips</div>`;
+  const order = state.shift?.queue[0];
+  const key = order ? `${state.day}-${order.id}-${order.stage}` : null;
+  if (cashierDraft.orderId !== key) cashierDraft = { orderId: key, amount: "" };
+  return registerView(state, cashierDraft);
+}
+
+function refreshCounter() {
+  if (page !== "counter") return;
+  setHTML("register-card", registerContent());
+  setHTML("order-speech", speechView(state));
+  setHTML("counter-guest", guestView(state));
+  setHTML("customer-queue", queueView(state));
+  updateLive();
 }
 
 function menuPage() {
@@ -220,10 +181,10 @@ function updateLive() {
   if (!shift || page !== "counter") return;
   setText("stat-balance", money(state.balance));
   setText("stat-sales", money(shift.revenue));
-  setHTML("stat-served", `${shift.served}<small>this shift</small>`);
+  setHTML("stat-served", String(shift.served));
   setHTML(
     "stat-streak",
-    `${Math.max(state.lifetime.bestStreak, shift.bestStreak)}<small>orders</small>`,
+    String(Math.max(state.lifetime.bestStreak, shift.bestStreak)),
   );
   setText("shift-time", timeText(shift.remaining));
   setHTML(
@@ -342,7 +303,7 @@ function showHelp() {
     render();
   }
   modal(
-    `<span class="handbook-icon">${icon("burger", "", 38)}</span><div class="eyebrow">THE OWNER’S HANDBOOK</div><h2 id="modal-title">A little hustle.<br>A lot of heart.</h2><p class="modal-intro">Welcome to The Daily Bun. Your shop, your menu, your math.</p><div class="handbook-steps"><div><span>01</span><div><h3>Build something delicious.</h3><p>Choose a patty and toppings in Menu builder. Every ingredient has a cost. Set a selling price above that cost, but keep it fair to attract customers.</p></div></div><div><span>02</span><div><h3>Open up. Think on your feet.</h3><p>Each shift lasts 90 seconds. Add up quantities × menu prices, then subtract the total from the cash received to find the change. Enter both amounts to serve.</p><div class="math-example">2 burgers × $6.50 + 1 fries × $2.50 = <strong>$15.50</strong><br>$20.00 cash − $15.50 total = <strong>$4.50 change</strong></div></div></div><div><span>03</span><div><h3>Turn good math into a good business.</h3><p>Ingredients are deducted with each sale; ${money(DAILY_RENT)} overhead is charged at closing. Fast, first-try answers earn a $0.50 tip. Reinvest your profit in upgrades.</p></div></div></div><div class="handbook-note">${icon("clock", "", 18)} Customers in the lineup lose patience too. Pause whenever you need a breather. Progress saves on this device; reloaded shifts resume paused.</div>${button("Let’s make something good " + icon("arrow", "", 17), "dismiss", "btn-primary full-width")}`,
+    `<span class="handbook-icon">${icon("burger", "", 38)}</span><div class="eyebrow">THE OWNER’S HANDBOOK</div><h2 id="modal-title">A little hustle.<br>A lot of heart.</h2><p class="modal-intro">Welcome to The Daily Bun. Your shop, your menu, your math.</p><div class="handbook-steps"><div><span>01</span><div><h3>Build something delicious.</h3><p>Choose a patty and toppings in Menu builder. Every ingredient has a cost. Set a selling price above that cost, but keep it fair to attract customers.</p></div></div><div><span>02</span><div><h3>Open up. Think on your feet.</h3><p>Each shift lasts 90 seconds. Add up quantities × menu prices, then subtract the total from the cash received to find the change. Enter the total on your register and press TOTAL. Your customer will then hand over cash. Enter their change and press CHANGE to finish the sale.</p><div class="math-example">2 burgers × $6.50 + 1 fries × $2.50 = <strong>$15.50</strong><br>$20.00 cash − $15.50 total = <strong>$4.50 change</strong></div></div></div><div><span>03</span><div><h3>Turn good math into a good business.</h3><p>Ingredients are deducted with each sale; ${money(DAILY_RENT)} overhead is charged at closing. Fast, first-try answers earn a $0.50 tip. Reinvest your profit in upgrades.</p></div></div></div><div class="handbook-note">${icon("clock", "", 18)} Customers in the lineup lose patience too. Pause whenever you need a breather. Progress saves on this device; reloaded shifts resume paused.</div>${button("Let’s make something good " + icon("arrow", "", 17), "dismiss", "btn-primary full-width")}`,
     "help-modal",
   );
 }
@@ -375,7 +336,7 @@ function actionHandler(event) {
     lastTick = performance.now();
     persist();
     render();
-    document.querySelector("#order-total")?.focus({ preventScroll: true });
+    document.querySelector("#register-amount")?.focus({ preventScroll: true });
   } else if (action === "pause") {
     if (!state.shift) return;
     state.shift.paused = !state.shift.paused;
@@ -383,7 +344,15 @@ function actionHandler(event) {
     persist();
     render();
     if (!state.shift.paused)
-      document.querySelector("#order-total")?.focus({ preventScroll: true });
+      document
+        .querySelector("#register-amount")
+        ?.focus({ preventScroll: true });
+  } else if (action === "register-key") {
+    const input = document.querySelector("#register-amount");
+    if (!input || input.disabled) return;
+    input.value = pressKey(input.value, target.dataset.key);
+    cashierDraft.amount = input.value;
+    input.focus({ preventScroll: true });
   } else if (action === "edit") openEditor(target.dataset.id);
   else if (action === "new-burger") openEditor();
   else if (action === "help") showHelp();
@@ -461,20 +430,19 @@ app.addEventListener("click", actionHandler);
 modalRoot.addEventListener("click", actionHandler);
 
 app.addEventListener("input", (event) => {
-  if (event.target.id === "order-total")
-    cashierDraft.total = event.target.value;
-  if (event.target.id === "change-due")
-    cashierDraft.change = event.target.value;
+  if (event.target.id === "register-amount")
+    cashierDraft.amount = event.target.value;
 });
 
 app.addEventListener("submit", (event) => {
   if (event.target.id !== "cashier-form") return;
   event.preventDefault();
-  const result = serveOrder(
-    state,
-    event.target.elements.total.value,
-    event.target.elements.change.value,
-  );
+  const order = state.shift?.queue[0];
+  if (!order) return;
+  const result =
+    order.stage === "total"
+      ? submitOrderTotal(state, event.target.elements.amount.value)
+      : serveOrder(state, event.target.elements.amount.value);
   if (!result.ok) {
     setText("cashier-feedback", result.message);
     document.querySelector("#cashier-feedback")?.classList.add("error-text");
@@ -488,13 +456,54 @@ app.addEventListener("submit", (event) => {
     return;
   }
   persist();
-  setHTML("register-card", registerContent());
-  setHTML("customer-queue", queueContent());
-  updateLive();
-  toast(
-    `${result.customer} says thanks! +${money(result.profit)} profit${result.tip ? ` (includes ${money(result.tip)} tip)` : ""}`,
-  );
-  document.querySelector("#order-total")?.focus({ preventScroll: true });
+  refreshCounter();
+  if (result.stage !== "change") {
+    toast(
+      `${result.customer} says thanks! +${money(result.profit)} profit${result.tip ? ` (includes ${money(result.tip)} tip)` : ""}`,
+    );
+    const register = document.querySelector("#register-card");
+    register?.classList.add("drawer-open");
+    setTimeout(() => register?.classList.remove("drawer-open"), 900);
+  }
+  document.querySelector("#register-amount")?.focus({ preventScroll: true });
+});
+
+// Physical keyboard entry also works after clicking the shop scenery.
+// Native inputs and modal keyboard shortcuts keep their normal behavior.
+document.addEventListener("keydown", (event) => {
+  if (
+    page !== "counter" ||
+    !state.shift ||
+    state.shift.paused ||
+    modalRoot.querySelector("dialog") ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.altKey
+  )
+    return;
+  if (event.target.closest("input, textarea, select, button, a")) return;
+  const input = document.querySelector("#register-amount");
+  if (!input || input.disabled) return;
+  if (
+    /^[0-9.]$/.test(event.key) ||
+    event.key === "Backspace" ||
+    event.key === "Delete"
+  ) {
+    event.preventDefault();
+    input.value = pressKey(
+      input.value,
+      event.key === "Backspace"
+        ? "backspace"
+        : event.key === "Delete"
+          ? "clear"
+          : event.key,
+    );
+    cashierDraft.amount = input.value;
+    input.focus({ preventScroll: true });
+  } else if (event.key === "Enter") {
+    event.preventDefault();
+    document.querySelector("#cashier-form")?.requestSubmit();
+  }
 });
 
 modalRoot.addEventListener("input", (event) => {
@@ -553,9 +562,8 @@ setInterval(() => {
     return;
   }
   if (events.length && page === "counter") {
-    setHTML("customer-queue", queueContent());
-    if (previous !== state.shift.queue[0]?.id)
-      setHTML("register-card", registerContent());
+    if (previous !== state.shift.queue[0]?.id) refreshCounter();
+    else setHTML("customer-queue", queueView(state));
   }
   if (events.some((i) => i.type === "left"))
     toast("A customer had to leave. The next one is a fresh start.");

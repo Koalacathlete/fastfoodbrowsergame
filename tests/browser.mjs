@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync } from "node:fs";
 import { chromium } from "playwright";
 import { createServer } from "vite";
+import { initialState, startShift, SAVE_KEY } from "../src/game.js";
 
 const server = await createServer({
   server: { host: "127.0.0.1", port: 4174, strictPort: true },
@@ -32,7 +33,10 @@ try {
   await page.evaluate(() => document.fonts.ready);
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: "test-results/desktop.png", fullPage: true });
-  assert.match(await page.locator("h1").innerText(), /Good food/);
+  assert.match(
+    await page.locator("h1").innerText(),
+    /Your side of the counter/,
+  );
   assert.equal(await page.locator("#stat-balance").innerText(), "$120.00");
 
   // Recipe creation, ingredient math, price validation, and persistence.
@@ -88,45 +92,111 @@ try {
   await page.locator('nav [data-page="counter"]').click();
   assert.equal(await page.locator("#stat-balance").innerText(), "$85.00");
 
-  // The customer is actually served only when BOTH cashier answers are right.
+  // A physical till rings up the total first; cash is not revealed early.
   await page.locator('[data-action="start"]').click();
-  await page.locator("#order-total").fill("0");
-  await page.locator("#change-due").fill("0");
-  await page.locator('#cashier-form button[type="submit"]').click();
+  assert.equal(await page.locator("#cash-received").count(), 0);
+  assert.equal(
+    await page
+      .getByRole("textbox", { name: "Order total", exact: true })
+      .count(),
+    1,
+  );
+  await page.locator('[data-key="0"]').click();
+  await page.locator(".till-enter").click();
   assert.match(
     await page.locator("#cashier-feedback").innerText(),
     /little off/,
   );
   assert.equal(await page.locator("#stat-balance").innerText(), "$85.00");
-  const order = await page.evaluate(() => ({
-    total: [...document.querySelectorAll(".order-line")].reduce(
-      (s, i) => s + Number(i.dataset.price) * Number(i.dataset.qty),
-      0,
-    ),
-    cash: Number(document.querySelector("#cash-received").dataset.cents),
-  }));
-  await page.locator("#order-total").fill((order.total / 100).toFixed(2));
-  await page
-    .locator("#change-due")
-    .fill(((order.cash - order.total) / 100).toFixed(2));
+  const total = await page
+    .locator(".order-line")
+    .evaluateAll((lines) =>
+      lines.reduce(
+        (sum, line) =>
+          sum + Number(line.dataset.price) * Number(line.dataset.qty),
+        0,
+      ),
+    );
+  await page.locator('[data-key="clear"]').click();
+  for (const key of (total / 100).toFixed(2))
+    await page.locator(`[data-key="${key}"]`).click();
 
-  // Pausing preserves partially entered math and truly freezes the clock.
-  await page.locator('[data-action="pause"]').click();
+  // Pause preserves the entered amount and freezes patience as well as time.
+  await page.locator('.scene-shift-bar [data-action="pause"]').click();
   const pausedTime = await page.locator("#shift-time").innerText();
+  const pausedPatience = await page.locator("#patience-label").innerText();
   await page.clock.runFor(5000);
   assert.equal(await page.locator("#shift-time").innerText(), pausedTime);
   assert.equal(
-    await page.locator("#order-total").inputValue(),
-    (order.total / 100).toFixed(2),
+    await page.locator("#patience-label").innerText(),
+    pausedPatience,
   );
-  assert.equal(await page.locator("#order-total").isDisabled(), true);
-  await page.locator('[data-action="pause"]').click();
-  await page.locator("#change-due").press("Enter");
-  assert.match(await page.locator("#stat-served").innerText(), /1/);
+  assert.equal(
+    await page.locator("#register-amount").inputValue(),
+    (total / 100).toFixed(2),
+  );
+  assert.equal(await page.locator("#register-amount").isDisabled(), true);
+  await page.locator('.scene-shift-bar [data-action="pause"]').click();
+  await page.locator("#register-amount").press("Enter");
+  assert.equal(
+    await page
+      .getByRole("textbox", { name: "Change due", exact: true })
+      .count(),
+    1,
+  );
+  assert.equal(
+    await page.locator("#stat-balance").innerText(),
+    "$85.00",
+    "accepting a total does not book a sale",
+  );
+  assert.equal(await page.locator("#stat-served").innerText(), "0");
+  assert.equal(
+    await page.locator("#register-amount").inputValue(),
+    "",
+    "payment gets a fresh entry",
+  );
+  const cash = Number(
+    await page.locator("#cash-received").getAttribute("data-cents"),
+  );
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({
+    path: "test-results/payment-stage.png",
+    fullPage: true,
+  });
+
+  // Payment itself survives reload, and a wrong change amount does not credit money.
+  await page.reload();
+  assert.match(await page.locator("#shop-status").innerText(), /paused/);
+  assert.equal(
+    await page
+      .getByRole("textbox", { name: "Change due", exact: true })
+      .isDisabled(),
+    true,
+  );
+  assert.equal(
+    Number(await page.locator("#cash-received").getAttribute("data-cents")),
+    cash,
+  );
+  await page.locator('.scene-shift-bar [data-action="pause"]').click();
+  await page.locator("#register-amount").fill("0");
+  await page.locator(".till-enter").click();
+  assert.match(
+    await page.locator("#cashier-feedback").innerText(),
+    /Check the change/,
+  );
+  assert.equal(await page.locator("#stat-balance").innerText(), "$85.00");
+  await page
+    .locator("#register-amount")
+    .fill(((cash - total) / 100).toFixed(2));
+  await page.locator("#register-amount").press("Enter");
+  assert.equal(await page.locator("#stat-served").innerText(), "1");
   assert.notEqual(await page.locator("#stat-balance").innerText(), "$85.00");
+  assert.equal(await page.locator("#cash-received").count(), 0);
 
   await page.clock.runFor(16000);
   assert.ok((await page.locator(".order-line").count()) > 0);
+  assert.equal(await page.locator("#register-amount").inputValue(), "");
+  assert.equal(await page.locator("#cash-received").count(), 0);
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({
     path: "test-results/active-shift.png",
@@ -134,8 +204,13 @@ try {
   });
   await page.reload();
   assert.match(await page.locator("#shop-status").innerText(), /paused/);
-  assert.equal(await page.locator("#order-total").isDisabled(), true);
-  await page.locator('[data-action="pause"]').click();
+  assert.equal(
+    await page
+      .getByRole("textbox", { name: "Order total", exact: true })
+      .isDisabled(),
+    true,
+  );
+  await page.locator('.scene-shift-bar [data-action="pause"]').click();
 
   // Run the real UI timer to automatic closing; inspect the actual daily report.
   await page.clock.runFor(95000);
@@ -174,6 +249,19 @@ try {
   assert.match(await page.locator(".help-modal").innerText(), /90 seconds/);
   await page.keyboard.press("Escape");
   assert.equal(await page.locator("dialog").count(), 0);
+
+  // The physical register also fits a common laptop viewport.
+  await page.setViewportSize({ width: 1366, height: 768 });
+  await page.evaluate(() => window.scrollTo(0, 0));
+  const drawerBox = await page.locator(".register-base").boundingBox();
+  assert.ok(
+    drawerBox.y + drawerBox.height <= 768,
+    "register drawer fits the laptop viewport",
+  );
+  await page.screenshot({
+    path: "test-results/laptop-counter.png",
+    fullPage: true,
+  });
 
   // A narrow screen supports the same gameplay and every page without overflow.
   const mobile = await browser.newPage({
@@ -218,27 +306,60 @@ try {
   await mobile.locator('nav [data-page="counter"]').click();
   await mobile.locator('[data-action="start"]').click();
   assert.equal(
-    await mobile.locator(".shop-scene").isVisible(),
-    false,
-    "mobile play prioritizes the register",
+    await mobile.locator(".pov-stage").isVisible(),
+    true,
+    "mobile play keeps the first-person shop",
   );
-  await mobile.locator("#order-total").fill("1.25");
-  assert.equal(await mobile.locator("#order-total").inputValue(), "1.25");
+  await mobile.locator("#register-amount").fill("1.25");
+  assert.equal(await mobile.locator("#register-amount").inputValue(), "1.25");
   await mobile.evaluate(() => window.scrollTo(0, 0));
   await mobile.screenshot({
     path: "test-results/mobile-active.png",
     fullPage: true,
   });
-  await mobile.locator('[data-action="pause"]').click();
+  await mobile.locator('.scene-shift-bar [data-action="pause"]').click();
   await mobile.locator('nav [data-page="menu"]').click();
   assert.equal(
     await mobile.locator('[data-action="edit"]').first().isDisabled(),
     true,
   );
 
+  // Later days with long recipe names must still expose every item on mobile.
+  const busyState = initialState();
+  busyState.day = 4;
+  busyState.menu[0].name = "The Extra Special Burger";
+  startShift(busyState, () => 0.1);
+  await mobile.addInitScript(
+    ({ key, value }) => localStorage.setItem(key, value),
+    {
+      key: SAVE_KEY,
+      value: JSON.stringify(busyState),
+    },
+  );
+  await mobile.reload();
+  await mobile.locator('.scene-shift-bar [data-action="pause"]').click();
+  assert.equal(await mobile.locator(".order-line").count(), 3);
+  const tillBox = await mobile.locator(".cash-register").boundingBox();
+  for (const line of await mobile.locator(".order-line").all()) {
+    const lineBox = await line.boundingBox();
+    assert.ok(
+      lineBox.y + lineBox.height < tillBox.y,
+      "the register does not cover the order",
+    );
+  }
+  const busyTotal = busyState.shift.queue[0].total;
+  await mobile.locator("#register-amount").fill((busyTotal / 100).toFixed(2));
+  await mobile.locator(".till-enter").click();
+  assert.equal(await mobile.locator("#cash-received").isVisible(), true);
+  await mobile.evaluate(() => window.scrollTo(0, 0));
+  await mobile.screenshot({
+    path: "test-results/mobile-payment.png",
+    fullPage: true,
+  });
+
   assert.deepEqual(errors, [], "no browser runtime or console errors");
   console.log(
-    "PASS: recipe editing, pricing validation, new recipes, upgrades, cashier math, pause, save/resume, automatic closing, reports, early closing, reset, help, and mobile layouts.",
+    "PASS: recipe editing, pricing validation, new recipes, upgrades, two-stage cashier math, physical keypad, pause, save/resume, automatic closing, reports, early closing, reset, help, and mobile layouts.",
   );
   console.log("Screenshots saved in test-results/.");
 } finally {
