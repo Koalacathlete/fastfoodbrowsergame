@@ -1,0 +1,8 @@
+# Deploy with Render's "New > Blueprint" flow, or use the same settings
+# when creating a Static Site in the Render dashboard.
+services:
+  - type: web
+    name: the-daily-bun
+    runtime: static
+    buildCommand: npm ci --include=dev && npm run build
+    staticPublishPath: ./dist
