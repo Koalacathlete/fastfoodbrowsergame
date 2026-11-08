@@ -54,7 +54,8 @@ export function speechView(state) {
     <div class="speech-top"><span>ORDER #${String(order.id).padStart(3, "0")}</span><span>${icon("clock", "", 13)} <strong id="patience-label">${Math.ceil(order.patience)}s</strong></span></div>
     <span class="shopper-profile">LINE ${order.lane + 1} · ${esc(order.profile ?? "Lunch regular")}</span><h2>${esc(order.customer)} <span>says…</span></h2><p class="spoken-line">${paying ? "“Here’s my cash. Thank you!”" : esc(order.quote ?? "“Hey! Could I get…”")}</p>
     <div class="patience-track"><span id="patience-progress" style="width:${(order.patience / order.maxPatience) * 100}%"></span></div>
-    <div id="order-lines">${order.lines.map((line) => `<div class="order-line" data-price="${line.price}" data-qty="${line.qty}"><span><b>${line.qty}×</b> ${esc(line.name)}</span><strong>${money(line.price)}<small>each</small></strong></div>`).join("")}</div>
+    <div class="order-column-headings" aria-hidden="true"><span>QTY</span><span>YOUR ORDER</span><span>UNIT PRICE</span></div>
+    <div id="order-lines">${order.lines.map((line) => `<div class="order-line" data-price="${line.price}" data-qty="${line.qty}"><span class="order-quantity ${line.qty > 1 ? "multiple" : ""}" aria-label="Quantity: ${line.qty}"><b>${line.qty}</b><span aria-hidden="true">×</span></span><span class="order-item-name">${esc(line.name)}</span><strong class="order-unit-price">${money(line.price)}<small>each</small></strong></div>`).join("")}</div>
     ${paying ? `<div class="confirmed-total"><span>Rung up correctly</span><strong>${money(order.acceptedTotal)}</strong>${icon("check", "", 14)}</div><div class="cash-tendered"><span>Cash received</span><strong id="cash-received" data-cents="${order.cash}">${money(order.cash)}</strong></div>` : '<p class="slip-footer">What’s the total? Ring it up on your till.</p>'}
   </section>`;
 }
